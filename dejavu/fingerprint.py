@@ -61,35 +61,41 @@ PEAK_SORT = True
 # potentially higher collisions and misclassifications when identifying songs.
 FINGERPRINT_REDUCTION = 20
 
+
 def fingerprint(channel_samples, Fs=DEFAULT_FS,
                 wsize=DEFAULT_WINDOW_SIZE,
                 wratio=DEFAULT_OVERLAP_RATIO,
                 fan_value=DEFAULT_FAN_VALUE,
-                amp_min=DEFAULT_AMP_MIN):
+                amp_min=DEFAULT_AMP_MIN,
+                plot=False):
     """
     FFT the channel, log transform output, find local maxima, then return
     locally sensitive hashes.
     """
     # FFT the signal and extract frequency components
-    arr2D = mlab.specgram(
+    # http://matplotlib.org/api/mlab_api.html#matplotlib.mlab.specgram
+    # return of specgram is (spectrum, freqs, t)
+    arr2D, freqs, times = mlab.specgram(
         channel_samples,
         NFFT=wsize,
         Fs=Fs,
         window=mlab.window_hanning,
-        noverlap=int(wsize * wratio))[0]
+        noverlap=int(wsize * wratio))
 
     # apply log transform since specgram() returns linear array
     arr2D = 10 * np.log10(arr2D)
     arr2D[arr2D == -np.inf] = 0  # replace infs with zeros
 
     # find local maxima
-    local_maxima = get_2D_peaks(arr2D, plot=False, amp_min=amp_min)
+    local_maxima = get_2D_peaks(arr2D, plot=plot, amp_min=amp_min,
+                                freqs=freqs, times=times)
 
     # return hashes
     return generate_hashes(local_maxima, fan_value=fan_value)
 
 
-def get_2D_peaks(arr2D, plot=False, amp_min=DEFAULT_AMP_MIN):
+def get_2D_peaks(arr2D, plot=False, amp_min=DEFAULT_AMP_MIN,
+                 freqs=None, times=None):
     # http://docs.scipy.org/doc/scipy/reference/generated/scipy.ndimage.morphology.iterate_structure.html#scipy.ndimage.morphology.iterate_structure
     struct = generate_binary_structure(2, 1)
     neighborhood = iterate_structure(struct, PEAK_NEIGHBORHOOD_SIZE)
@@ -119,12 +125,17 @@ def get_2D_peaks(arr2D, plot=False, amp_min=DEFAULT_AMP_MIN):
     if plot:
         # scatter of the peaks
         fig, ax = plt.subplots()
-        ax.imshow(arr2D)
-        ax.scatter(time_idx, frequency_idx)
+        ax.set_autoscalex_on(True)
+        # 1. need to set 'origin', otherwise, image is upside-down
+        # 2. in order to fit image to screen, set 'extent' and 'aspect'
+        ax.imshow(arr2D, origin='lower',
+                  extent=[times[0], times[-1], freqs[0], freqs[-1]],
+                  interpolation='nearest', aspect='auto')
+        # mapping to right value, instead of just index
+        ax.scatter(times.take(time_idx), freqs.take(frequency_idx))
         ax.set_xlabel('Time')
         ax.set_ylabel('Frequency')
         ax.set_title("Spectrogram")
-        plt.gca().invert_yaxis()
         plt.show()
 
     return zip(frequency_idx, time_idx)
@@ -142,14 +153,15 @@ def generate_hashes(peaks, fan_value=DEFAULT_FAN_VALUE):
     for i in range(len(peaks)):
         for j in range(1, fan_value):
             if (i + j) < len(peaks):
-                
+
                 freq1 = peaks[i][IDX_FREQ_I]
                 freq2 = peaks[i + j][IDX_FREQ_I]
                 t1 = peaks[i][IDX_TIME_J]
                 t2 = peaks[i + j][IDX_TIME_J]
                 t_delta = t2 - t1
 
-                if t_delta >= MIN_HASH_TIME_DELTA and t_delta <= MAX_HASH_TIME_DELTA:
+                if t_delta >= MIN_HASH_TIME_DELTA \
+                   and t_delta <= MAX_HASH_TIME_DELTA:
                     h = hashlib.sha1(
                         "%s|%s|%s" % (str(freq1), str(freq2), str(t_delta)))
                     yield (h.hexdigest()[0:FINGERPRINT_REDUCTION], t1)
